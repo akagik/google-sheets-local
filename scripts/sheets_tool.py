@@ -14,6 +14,7 @@ Claude Code から Python 実行で呼び出す前提。
     python scripts/sheets_tool.py gid-to-name  <URL>
 """
 
+import datetime
 import json
 import os
 import re
@@ -27,11 +28,17 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_DIR = os.path.dirname(SCRIPT_DIR)
 TOKEN_PATH = os.path.join(SKILL_DIR, "config", "token.json")
+CHANGELOGS_DIR = os.path.join(SKILL_DIR, "changelogs")
 
 
 # ---------------------------------------------------------------------------
 # 共通ヘルパー
 # ---------------------------------------------------------------------------
+
+def _sanitize_range(range_: str) -> str:
+    r"""範囲文字列に含まれるシェル由来のエスケープ (\!) を除去する。"""
+    return range_.replace("\\!", "!")
+
 
 def extract_sheet_id(url: str) -> str:
     """URL から spreadsheetId を抽出する。"""
@@ -106,6 +113,7 @@ def read_range(url: str, range_: str) -> list[list[str]]:
     range_ の例: "Sheet1!A1:C10", "A1:F100"
     """
     sheet_id = extract_sheet_id(url)
+    range_ = _sanitize_range(range_)
     service = get_service()
     result = service.values().get(
         spreadsheetId=sheet_id,
@@ -173,6 +181,7 @@ def update_range(url: str, range_: str, values: list[list]) -> dict:
     values の例: [["val1", "val2", "val3"]]
     """
     sheet_id = extract_sheet_id(url)
+    range_ = _sanitize_range(range_)
     service = get_service()
     body = {"values": values}
     result = service.values().update(
@@ -182,6 +191,87 @@ def update_range(url: str, range_: str, values: list[list]) -> dict:
         body=body,
     ).execute()
     return result
+
+
+# ---------------------------------------------------------------------------
+# Changelog
+# ---------------------------------------------------------------------------
+
+def _extract_sheet_name_from_range(range_: str) -> str:
+    """範囲文字列からシート名を抽出する。"""
+    r = _sanitize_range(range_)
+    if "!" in r:
+        return r.split("!")[0].strip("'")
+    return "unknown"
+
+
+def _resolve_gid_by_sheet_name(sheet_id: str, sheet_name: str) -> int | None:
+    """シート名から gid を逆引きする。見つからなければ None。"""
+    try:
+        service = get_service()
+        meta = service.get(spreadsheetId=sheet_id).execute()
+        for s in meta.get("sheets", []):
+            if s["properties"]["title"] == sheet_name:
+                return s["properties"]["sheetId"]
+    except Exception:
+        pass
+    return None
+
+
+def _save_changelog(
+    url: str,
+    range_: str,
+    operation: str,
+    old_values=None,
+    new_values=None,
+    description: str | None = None,
+) -> str:
+    """変更ログを changelogs/ ディレクトリに Markdown ファイルとして保存する。"""
+    os.makedirs(CHANGELOGS_DIR, exist_ok=True)
+
+    now = datetime.datetime.now()
+    timestamp_str = now.strftime("%Y%m%d_%H%M")
+    sanitized_range = _sanitize_range(range_)
+    sheet_name = _extract_sheet_name_from_range(range_)
+
+    if description is None:
+        description = f"{sheet_name}の{operation}"
+
+    filename = f"{timestamp_str}_{description}.md"
+    filepath = os.path.join(CHANGELOGS_DIR, filename)
+
+    # ファイル名衝突を回避
+    counter = 1
+    while os.path.exists(filepath):
+        filename = f"{timestamp_str}_{description}_{counter}.md"
+        filepath = os.path.join(CHANGELOGS_DIR, filename)
+        counter += 1
+
+    sheet_id = extract_sheet_id(url)
+    gid = _resolve_gid_by_sheet_name(sheet_id, sheet_name)
+    if gid is not None:
+        spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?gid={gid}#gid={gid}"
+    else:
+        spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+    lines = [
+        f"# {description}",
+        "",
+        f"- **日時**: {now.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- **操作**: {operation}",
+        f"- **スプレッドシート**: [{sheet_name}]({spreadsheet_url})",
+        f"- **範囲**: `{sanitized_range}`",
+        "",
+    ]
+
+    if old_values is not None:
+        lines += ["## 変更前", "", "```json", json.dumps(old_values, ensure_ascii=False, indent=2), "```", ""]
+
+    lines += ["## 変更後", "", "```json", json.dumps(new_values, ensure_ascii=False, indent=2), "```", ""]
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    return filepath
 
 
 # ---------------------------------------------------------------------------
@@ -215,19 +305,30 @@ def main():
 
     elif cmd == "append":
         if len(sys.argv) < 5:
-            print("使い方: sheets_tool.py append <URL> <シート名> '<JSON配列>'")
+            print("使い方: sheets_tool.py append <URL> <シート名> '<JSON配列>' [説明]")
             sys.exit(1)
         sheet_name = sys.argv[3]
         row_values = json.loads(sys.argv[4])
-        _print_json(append_row(url, sheet_name, row_values))
+        desc = sys.argv[5] if len(sys.argv) > 5 else None
+        result = append_row(url, sheet_name, row_values)
+        log_range = f"'{sheet_name}'!append"
+        filepath = _save_changelog(url, log_range, "append", None, [row_values], desc)
+        result["changelog"] = filepath
+        _print_json(result)
 
     elif cmd == "update":
         if len(sys.argv) < 5:
-            print("使い方: sheets_tool.py update <URL> <範囲> '<JSON 2次元配列>'")
+            print("使い方: sheets_tool.py update <URL> <範囲> '<JSON 2次元配列>' [説明]")
             sys.exit(1)
         range_ = sys.argv[3]
         values = json.loads(sys.argv[4])
-        _print_json(update_range(url, range_, values))
+        desc = sys.argv[5] if len(sys.argv) > 5 else None
+        # 更新前の値を記録
+        old_values = read_range(url, range_)
+        result = update_range(url, range_, values)
+        filepath = _save_changelog(url, range_, "update", old_values, values, desc)
+        result["changelog"] = filepath
+        _print_json(result)
 
     elif cmd == "filter":
         if len(sys.argv) < 6:

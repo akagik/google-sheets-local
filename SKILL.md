@@ -101,6 +101,27 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py update "<URL>" 
 - values は 2 次元配列（行×列）で渡す。
 - 更新前に `read` で現在の値を確認し、変更内容をユーザーに確認してから実行すること。
 
+#### 行番号の特定に関する重要な注意
+
+`update` で特定の行を書き換える場合、**行番号の特定は慎重に行うこと**。
+`read` の結果（配列）から行番号を目視でカウントすると off-by-one エラーを起こしやすい。
+
+**推奨手順:**
+1. 対象の列を `read` で取得する（例: `'Sheet!B1:B30'`）。
+2. 結果の配列から対象値のインデックスを特定する（0-indexed）。
+3. 行番号 = インデックス + 1（範囲が A1 始まりの場合）。
+4. **更新実行前に、対象行の周辺数行を `read` で取得し、正しい行を指しているか必ず検証する。**
+
+```
+# 例: B列で "2001" を探して行番号を特定した後、更新前に必ず確認
+read "ExpeditionDungeon!B11:I11"  # 対象行のデータを確認
+# → dungeonId が "2001" であることを目視確認してから update を実行
+```
+
+**絶対にやってはいけないこと:**
+- 配列の要素数を目視で数えて行番号を決定する（off-by-one の原因）
+- 行番号の検証をせずに `update` を実行する（誤った行を破壊する危険がある）
+
 ### 6. 特定列の値でフィルタリング（filter）
 
 ユーザーが「バージョン 3.10.0 のデータだけ取得して」のように、特定の列の値でデータを絞り込みたい場合:
@@ -140,6 +161,29 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py gid-to-name "<U
 - 必ず **対象列に値が明示されている行だけ** を抽出する。
 - セクション単位の切り出し（「次の別バージョンが現れるまで」）は行わない。シートの構造を事前に確認せずに推測でフィルタリングしない。
 - フィルタリング前に、対象列の実データ構造（各行に値があるのか、セクション先頭のみか）を少量サンプルで確認することを推奨する。
+
+## Changelog（変更履歴の自動記録）
+
+`update` および `append` を実行すると、変更内容が自動的にローカルの changelog ファイルに記録される。
+
+- **保存先**: `.claude/skills/google-sheets-local/changelogs/`
+- **ファイル名**: `YYYYMMDD_HHMM_<説明>.md`
+- **記録内容**: 日時、操作種別、スプレッドシートへのリンク（gid付き）、範囲、変更前の値、変更後の値
+
+### 説明の指定方法
+
+`update` / `append` の最後の引数にオプションで説明を渡せる:
+
+```bash
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py update "<URL>" 'Sheet!A1' '[["値"]]' "Expeditionのdepth更新"
+```
+
+説明を省略した場合はシート名と操作から自動生成される（例: `ExpeditionDungeon_update`）。
+
+### 重要
+
+- **`update` / `append` を呼ぶ際は、必ず変更内容がわかる説明を渡すこと。**
+- changelog には変更前の値も記録されるため、万が一誤った更新をしても復元が可能。
 
 ## Safety & Error handling
 
