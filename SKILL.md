@@ -30,18 +30,86 @@ version: 0.1.0
 | `read` | 指定範囲のセル値を取得 |
 | `append` | シート末尾に 1 行追加 |
 | `update` | 指定範囲のセルを上書き更新 |
+| `insert-rows` | 指定行に新しい行を挿入してデータを書き込む（後続行は押し下げられる） |
 | `filter` | 指定列が特定の値と一致する行だけを抽出（シート全体を走査） |
 | `gid-to-name` | URL 内の gid パラメータからシート名を取得 |
+| `notes` | ヘッダー行の列名・型（2行目）・メモを一括取得 |
+| `lookup` | 呼び名からスプレッドシートの索引エントリを検索（URL 不要） |
+| `registry` | 登録済み全スプレッドシートの一覧を表示（URL 不要） |
 
 
+
+## レジストリ（索引表）
+
+頻繁に使うスプレッドシートを「呼び名」で参照できる仕組み。
+
+### ファイル構成
+
+- `registry/index.json`: 全シートのメタ情報（key, aliases, URL, シート名, gid, 説明）
+- `registry/sheets/<key>.md`: 各シートの詳細説明（列説明、注意事項、操作例）
+
+### index.json の構造
+
+```json
+[
+  {
+    "key": "artifact-master",
+    "aliases": ["アーティファクトテーブル", "ArtifactMaster"],
+    "url": "https://docs.google.com/spreadsheets/d/.../edit?gid=123#gid=123",
+    "sheet_name": "ArtifactMaster",
+    "gid": 123,
+    "description": "遠征アーティファクトのマスターデータ",
+    "detail_file": "artifact-master.md"
+  }
+]
+```
+
+### 詳細ファイル（registry/sheets/*.md）の書き方
+
+列名・型・メモは `notes` コマンドでスプレッドシートから直接取得できるため、md ファイルには二重管理しない。
+md ファイルには **スプレッドシートのメモには書けない情報** だけを記載する。
+
+- `# <シート名>` で始める
+- `## 概要`: シートの役割を簡潔に
+- `## 列情報の取得方法`: `notes` コマンドの実行例を記載
+- `## 注意事項`: データ構造の癖やハマりどころ、列間の制約（併用不可など）、Deprecated な列の情報
+- `## よく使う操作例`: 具体的なコマンド例
+
+### 新しいシートの登録手順
+
+1. `registry/index.json` にエントリを追加
+2. `registry/sheets/<key>.md` に詳細ファイルを作成
+3. `notes` コマンドで列情報を確認し、注意事項を md に記載
 
 ## How to handle a request
 
 すべての操作は以下の形式で `sheets_tool.py` を Bash 経由で実行します:
 
 ```
-python .claude/skills/google-sheets-local/scripts/sheets_tool.py <コマンド> <URL> [引数...]
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py <コマンド> [引数...]
 ```
+
+### 0. ユーザーが呼び名でシートを指定した場合
+
+ユーザーが URL ではなく「アーティファクトテーブル」「モンスターマスター」のような呼び名でシートを指定した場合:
+
+1. `lookup` で URL とシート名を解決する:
+
+```bash
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py lookup "アーティファクト"
+```
+
+2. `registry/sheets/` の詳細ファイルを Read で参照し、注意事項を確認する。
+3. 列構造の確認が必要な場合は `notes` コマンドで型・メモを取得する。
+4. 取得した URL を使って通常の `read` / `update` 等を実行する。
+
+### 0a. 登録済みシート一覧を確認
+
+```bash
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py registry
+```
+
+- 各エントリの key, aliases, sheet_name, description を一覧表示する。
 
 ### 1. シート名一覧を取得
 
@@ -56,14 +124,31 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py sheets "<URL>"
 ユーザーが「key 名一覧を取得して」と依頼した場合:
 
 ```bash
-# シート名指定なし（最初のシート）
-python .claude/skills/google-sheets-local/scripts/sheets_tool.py headers "<URL>"
-
-# シート名指定あり
 python .claude/skills/google-sheets-local/scripts/sheets_tool.py headers "<URL>" "シート名"
 ```
 
 返却される JSON 配列をそのまま整形してユーザーに提示する。
+
+**重要**: 列の構造を把握する必要がある場合（書き込み前、初めて触るシートなど）は、`headers` ではなく `notes` を使うこと。
+
+### 2a. ヘッダーの列名・型・メモを一括取得（notes）
+
+**シートの列情報を確認する際は、常にこのコマンドを使う。** `headers` は列名だけだが、`notes` は型とメモも一緒に取得できる。
+
+```bash
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py notes "<URL>" "シート名"
+```
+
+返却は JSON 配列。各要素は `{"name": "列名", "type": "int", "note": "メモ内容"}` の形式。
+
+- **type**: 2 行目のセル値をそのまま返す（例: `int`, `string`, `RarityType`, `AbilityType` 等）。2 行目が空なら空文字。
+- **note**: ヘッダーセルに付与されたメモ。複数行の場合は `\n` 区切り。メモが無ければ空文字。
+- 名前が空の列はスキップされる。
+
+**使うべきタイミング**:
+- 初めて操作するシートの列構造を把握するとき
+- `append` / `insert-rows` / `update` の前に列の型・意味を確認するとき
+- ユーザーにシートの構造を説明するとき
 
 ### 3. 指定範囲のデータを読み取る
 
@@ -80,7 +165,7 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py read "<URL>" 'S
 
 ユーザーが「このシートに 1 行追加して」と依頼した場合:
 
-1. まず `headers` コマンドでヘッダーを取得して列順を確認する。
+1. まず `notes` コマンドでヘッダー・型・メモを取得して列順と各列の意味を確認する。
 2. ユーザーが指定した値をヘッダー順の配列に変換する（未指定の列は空文字 `""` にする）。
 3. 以下を実行:
 
@@ -122,7 +207,29 @@ read "ExpeditionDungeon!B11:I11"  # 対象行のデータを確認
 - 配列の要素数を目視で数えて行番号を決定する（off-by-one の原因）
 - 行番号の検証をせずに `update` を実行する（誤った行を破壊する危険がある）
 
-### 6. 特定列の値でフィルタリング（filter）
+### 6. 行を挿入（insert-rows）
+
+既存データの間に新しい行を挿入したい場合に使う。`update` と違い、後続の行を押し下げて新しい行を差し込む。
+
+```bash
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py insert-rows "<URL>" "シート名" <行番号> '<JSON 2次元配列>' [説明]
+```
+
+- **行番号**: 1-indexed。指定した行番号の位置に新しい行が挿入される（既存の行は下に押し下げられる）。
+- **values**: 2 次元配列。複数行を一度に挿入可能。
+- 後続の行やセクションヘッダーが壊れることなく、安全に行を差し込める。
+
+例:
+```bash
+# シート "ArtifactMaster" の行 374 に 1 行挿入
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py insert-rows "<URL>" "ArtifactMaster" 374 '[["値1", "値2", "値3"]]' "新アーティファクト追加"
+```
+
+**`update` との使い分け:**
+- 空行に書き込む場合 → `update` で OK
+- 既存データの間に行を差し込む場合 → `insert-rows` を使う
+
+### 7. 特定列の値でフィルタリング（filter）
 
 ユーザーが「バージョン 3.10.0 のデータだけ取得して」のように、特定の列の値でデータを絞り込みたい場合:
 
@@ -140,7 +247,7 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py filter "<URL>" 
 - `read` コマンドのように範囲を指定する必要がないため、行数が不明な場合に便利。
 - 指定した列名がヘッダーに存在しない場合はエラーになる。
 
-### 7. URL の gid からシート名を取得（gid-to-name）
+### 8. URL の gid からシート名を取得（gid-to-name）
 
 ユーザーが URL 付きで操作を依頼した場合、URL に `gid=` パラメータが含まれていれば、**最初に** このコマンドでシート名を特定する。
 これにより全シートを順に検索する必要がなくなる。
@@ -164,7 +271,7 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py gid-to-name "<U
 
 ## Changelog（変更履歴の自動記録）
 
-`update` および `append` を実行すると、変更内容が自動的にローカルの changelog ファイルに記録される。
+`update`、`append`、`insert-rows` を実行すると、変更内容が自動的にローカルの changelog ファイルに記録される。
 
 - **保存先**: `.claude/skills/google-sheets-local/changelogs/`
 - **ファイル名**: `YYYYMMDD_HHMM_<説明>.md`
@@ -172,7 +279,7 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py gid-to-name "<U
 
 ### 説明の指定方法
 
-`update` / `append` の最後の引数にオプションで説明を渡せる:
+`update` / `append` / `insert-rows` の最後の引数にオプションで説明を渡せる:
 
 ```bash
 python .claude/skills/google-sheets-local/scripts/sheets_tool.py update "<URL>" 'Sheet!A1' '[["値"]]' "Expeditionのdepth更新"
@@ -182,7 +289,7 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py update "<URL>" 
 
 ### 重要
 
-- **`update` / `append` を呼ぶ際は、必ず変更内容がわかる説明を渡すこと。**
+- **`update` / `append` / `insert-rows` を呼ぶ際は、必ず変更内容がわかる説明を渡すこと。**
 - changelog には変更前の値も記録されるため、万が一誤った更新をしても復元が可能。
 
 ## Safety & Error handling

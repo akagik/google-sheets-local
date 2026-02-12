@@ -9,9 +9,13 @@ Claude Code から Python 実行で呼び出す前提。
     python scripts/sheets_tool.py read         <URL> <範囲>
     python scripts/sheets_tool.py append       <URL> <シート名> <JSON配列>
     python scripts/sheets_tool.py update       <URL> <範囲> <JSON 2次元配列>
+    python scripts/sheets_tool.py insert-rows  <URL> <シート名> <行番号> <JSON 2次元配列> [説明]
     python scripts/sheets_tool.py sheets       <URL>
     python scripts/sheets_tool.py filter       <URL> <シート名> <列名> <値>
     python scripts/sheets_tool.py gid-to-name  <URL>
+    python scripts/sheets_tool.py notes        <URL> [シート名]
+    python scripts/sheets_tool.py lookup       <検索キーワード>
+    python scripts/sheets_tool.py registry
 """
 
 import datetime
@@ -29,6 +33,56 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILL_DIR = os.path.dirname(SCRIPT_DIR)
 TOKEN_PATH = os.path.join(SKILL_DIR, "config", "token.json")
 CHANGELOGS_DIR = os.path.join(SKILL_DIR, "changelogs")
+REGISTRY_PATH = os.path.join(SKILL_DIR, "registry", "index.json")
+
+
+# ---------------------------------------------------------------------------
+# レジストリ（索引表）
+# ---------------------------------------------------------------------------
+
+def _load_registry() -> list[dict]:
+    """registry/index.json を読み込んで返す。ファイルが無ければ空リスト。"""
+    if not os.path.exists(REGISTRY_PATH):
+        return []
+    with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def lookup(keyword: str) -> dict | None:
+    """呼び名（keyword）から索引エントリを検索して返す。
+
+    key の完全一致 → aliases の部分一致（大文字小文字無視）の順で検索。
+    一致しなければ None。
+    """
+    entries = _load_registry()
+    kw_lower = keyword.lower()
+
+    # key の完全一致
+    for entry in entries:
+        if entry["key"] == keyword:
+            return entry
+
+    # aliases の部分一致
+    for entry in entries:
+        for alias in entry.get("aliases", []):
+            if kw_lower in alias.lower() or alias.lower() in kw_lower:
+                return entry
+
+    return None
+
+
+def list_registry() -> list[dict]:
+    """登録済み全エントリの概要を返す。"""
+    entries = _load_registry()
+    return [
+        {
+            "key": e["key"],
+            "aliases": e.get("aliases", []),
+            "sheet_name": e.get("sheet_name", ""),
+            "description": e.get("description", ""),
+        }
+        for e in entries
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +161,37 @@ def get_header_keys(url: str, sheet_name: str | None = None) -> list[str]:
     return values[0] if values else []
 
 
+def get_header_notes(url: str, sheet_name: str | None = None) -> list[dict]:
+    """ヘッダー行の列名・型（2行目）・メモを取得して返す。
+
+    返却: [{"name": "列名", "type": "int", "note": "メモ\n複数行"}, ...]
+    メモや型が無い列も含む（空文字）。名前が空の列はスキップ。
+    """
+    sheet_id = extract_sheet_id(url)
+    service = get_service()
+    range_ = f"'{sheet_name}'!1:2" if sheet_name else "1:2"
+    result = service.get(
+        spreadsheetId=sheet_id,
+        ranges=range_,
+        fields="sheets.data.rowData.values(formattedValue,note)",
+    ).execute()
+
+    row_data = result["sheets"][0]["data"][0].get("rowData", [])
+    headers = row_data[0].get("values", []) if len(row_data) > 0 else []
+    type_row = row_data[1].get("values", []) if len(row_data) > 1 else []
+
+    columns = []
+    for i, cell in enumerate(headers):
+        name = cell.get("formattedValue", "")
+        if not name:
+            continue
+        note = cell.get("note", "")
+        type_cell = type_row[i] if i < len(type_row) else {}
+        type_str = type_cell.get("formattedValue", "")
+        columns.append({"name": name, "type": type_str, "note": note})
+    return columns
+
+
 def read_range(url: str, range_: str) -> list[list[str]]:
     """指定範囲のセル値を 2 次元配列で返す。
 
@@ -172,6 +257,57 @@ def append_row(url: str, sheet_name: str, row_values: list) -> dict:
         body=body,
     ).execute()
     return result.get("updates", {})
+
+
+def _resolve_sheet_id_by_name(spreadsheet_id: str, sheet_name: str) -> int:
+    """シート名から sheetId (gid) を取得する。"""
+    service = get_service()
+    meta = service.get(spreadsheetId=spreadsheet_id).execute()
+    for s in meta.get("sheets", []):
+        if s["properties"]["title"] == sheet_name:
+            return s["properties"]["sheetId"]
+    raise ValueError(f"シート '{sheet_name}' が見つかりません。")
+
+
+def insert_rows(url: str, sheet_name: str, row_number: int, values: list[list]) -> dict:
+    """指定行に新しい行を挿入してデータを書き込む。
+
+    row_number: 1-indexed の行番号。その行の前に挿入される。
+    values: 書き込むデータの 2 次元配列。
+    """
+    spreadsheet_id = extract_sheet_id(url)
+    sid = _resolve_sheet_id_by_name(spreadsheet_id, sheet_name)
+    service = get_service()
+    num_rows = len(values)
+
+    # 1. 空行を挿入
+    insert_req = {
+        "requests": [
+            {
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sid,
+                        "dimension": "ROWS",
+                        "startIndex": row_number - 1,  # 0-indexed
+                        "endIndex": row_number - 1 + num_rows,
+                    },
+                    "inheritFromBefore": True,
+                }
+            }
+        ]
+    }
+    service.batchUpdate(spreadsheetId=spreadsheet_id, body=insert_req).execute()
+
+    # 2. 挿入した行にデータを書き込む
+    write_range = f"'{sheet_name}'!A{row_number}"
+    body = {"values": values}
+    result = service.values().update(
+        spreadsheetId=spreadsheet_id,
+        range=write_range,
+        valueInputOption="USER_ENTERED",
+        body=body,
+    ).execute()
+    return result
 
 
 def update_range(url: str, range_: str, values: list[list]) -> dict:
@@ -283,11 +419,41 @@ def _print_json(obj):
 
 
 def main():
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
 
     cmd = sys.argv[1]
+
+    # --- URL 不要のコマンド ---
+
+    if cmd == "registry":
+        _print_json(list_registry())
+        return
+
+    if cmd == "lookup":
+        if len(sys.argv) < 3:
+            print("使い方: sheets_tool.py lookup <検索キーワード>")
+            sys.exit(1)
+        keyword = sys.argv[2]
+        result = lookup(keyword)
+        if result:
+            _print_json(result)
+        else:
+            entries = list_registry()
+            print(f"エラー: '{keyword}' に一致するエントリが見つかりません。", file=sys.stderr)
+            print("\n登録済みエントリ一覧:", file=sys.stderr)
+            for e in entries:
+                print(f"  - {e['key']}: {e['description']} (aliases: {', '.join(e['aliases'])})", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # --- URL 必須のコマンド ---
+
+    if len(sys.argv) < 3:
+        print(__doc__)
+        sys.exit(1)
+
     url = sys.argv[2]
 
     if cmd == "sheets":
@@ -296,6 +462,10 @@ def main():
     elif cmd == "headers":
         sheet_name = sys.argv[3] if len(sys.argv) > 3 else None
         _print_json(get_header_keys(url, sheet_name))
+
+    elif cmd == "notes":
+        sheet_name = sys.argv[3] if len(sys.argv) > 3 else None
+        _print_json(get_header_notes(url, sheet_name))
 
     elif cmd == "read":
         if len(sys.argv) < 4:
@@ -327,6 +497,20 @@ def main():
         old_values = read_range(url, range_)
         result = update_range(url, range_, values)
         filepath = _save_changelog(url, range_, "update", old_values, values, desc)
+        result["changelog"] = filepath
+        _print_json(result)
+
+    elif cmd == "insert-rows":
+        if len(sys.argv) < 6:
+            print("使い方: sheets_tool.py insert-rows <URL> <シート名> <行番号> '<JSON 2次元配列>' [説明]")
+            sys.exit(1)
+        sheet_name = sys.argv[3]
+        row_number = int(sys.argv[4])
+        values = json.loads(sys.argv[5])
+        desc = sys.argv[6] if len(sys.argv) > 6 else None
+        result = insert_rows(url, sheet_name, row_number, values)
+        log_range = f"'{sheet_name}'!A{row_number}"
+        filepath = _save_changelog(url, log_range, "insert-rows", None, values, desc)
         result["changelog"] = filepath
         _print_json(result)
 
