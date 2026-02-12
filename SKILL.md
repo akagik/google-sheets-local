@@ -31,21 +31,9 @@ version: 0.1.0
 | `append` | シート末尾に 1 行追加 |
 | `update` | 指定範囲のセルを上書き更新 |
 | `filter` | 指定列が特定の値と一致する行だけを抽出（シート全体を走査） |
+| `gid-to-name` | URL 内の gid パラメータからシート名を取得 |
 
-## シェルでのクォーティングに関する注意
 
-zsh では `!` が履歴展開の特殊文字として解釈されるため、`"Sheet1!A1:C10"` のようにダブルクォートで囲むと `event not found` エラーになる。
-範囲指定やシート名を含む引数は **必ずシングルクォート** を使うこと:
-
-```bash
-# OK — シングルクォート
-python ... read "<URL>" 'Sheet1!A1:C10'
-
-# NG — ダブルクォートだと ! が履歴展開される
-python ... read "<URL>" "Sheet1!A1:C10"
-```
-
-この規則はすべてのコマンド引数に `!` が含まれる場合に適用される（`read`, `update` の範囲指定など）。
 
 ## How to handle a request
 
@@ -130,6 +118,19 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py filter "<URL>" 
 - 結果はヘッダーをキーとした辞書の JSON 配列で返却される。
 - `read` コマンドのように範囲を指定する必要がないため、行数が不明な場合に便利。
 - 指定した列名がヘッダーに存在しない場合はエラーになる。
+
+### 7. URL の gid からシート名を取得（gid-to-name）
+
+ユーザーが URL 付きで操作を依頼した場合、URL に `gid=` パラメータが含まれていれば、**最初に** このコマンドでシート名を特定する。
+これにより全シートを順に検索する必要がなくなる。
+
+```bash
+python .claude/skills/google-sheets-local/scripts/sheets_tool.py gid-to-name "<URL>"
+```
+
+- URL 内の `gid` パラメータに対応するシート名を文字列で返す。
+- `gid` が無い場合は最初のシート名を返す。
+- **重要**: ユーザーが URL を指定した場合、`filter` や `read` の前にまずこのコマンドを実行してシート名を確定させること。
 
 ## フィルタリング時の注意事項
 
