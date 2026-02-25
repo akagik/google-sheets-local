@@ -1,0 +1,38 @@
+[
+  {
+    "key": "artifact-master",
+    "aliases": ["アーティファクトテーブル", "ArtifactMaster", "遠征アーティファクト", "アーティファクトマスター"],
+    "url": "https://docs.google.com/spreadsheets/d/1VPEQiB4vmU37wJaXncWgF9t0xS7sbtQHH8VxvwtQuow/edit?gid=1153062716#gid=1153062716",
+    "sheet_name": "ArtifactMaster",
+    "gid": 1153062716,
+    "description": "遠征アーティファクトのマスターデータ",
+    "detail_file": "artifact-master.md"
+  },
+  {
+    "key": "localize-master",
+    "aliases": ["ローカライズ", "ローカライズマスター", "localize", "LocalizeMaster", "localize_master"],
+    "url": "https://docs.google.com/spreadsheets/d/1OsCLyW0j9me0Cz-1c4rSwRBvxPx5Kufr01EblywFaqU/edit?gid=2003647371#gid=2003647371",
+    "sheet_name": "localize_master",
+    "gid": 2003647371,
+    "description": "ローカライズマスターテーブル（多言語テキスト管理）",
+    "detail_file": "localize-master.md"
+  },
+  {
+    "key": "monster-master",
+    "aliases": ["モンスター", "モンスターマスター", "MonsterMaster", "モンスターテーブル", "MonsterParam"],
+    "url": "https://docs.google.com/spreadsheets/d/1Cd-mnTmpzwxD4PKTcy74DMla0xNI5I867ibHn0NPqGA/edit?gid=1545855247#gid=1545855247",
+    "sheet_name": "MonsterParam",
+    "gid": 1545855247,
+    "description": "モンスターパラメータのマスターデータ",
+    "detail_file": "monster-master.md"
+  },
+  {
+    "key": "expedition-localize",
+    "aliases": ["遠征ローカライズ", "expedition", "遠征テキスト"],
+    "url": "https://docs.google.com/spreadsheets/d/1OsCLyW0j9me0Cz-1c4rSwRBvxPx5Kufr01EblywFaqU/edit?gid=605288#gid=605288",
+    "sheet_name": "expedition",
+    "gid": 605288,
+    "description": "遠征機能のローカライズテキスト",
+    "detail_file": "expedition-localize.md"
+  }
+]

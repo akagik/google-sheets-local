@@ -292,6 +292,18 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py update "<URL>" 
 - **`update` / `append` / `insert-rows` を呼ぶ際は、必ず変更内容がわかる説明を渡すこと。**
 - changelog には変更前の値も記録されるため、万が一誤った更新をしても復元が可能。
 
+## enum 値の書き込みに関する注意
+
+スプレッドシートの列の型が enum 型（例: `RecommendType`, `RarityType`, `AbilityType` 等）の場合、
+**数値ではなく enum の識別子（文字列）を書き込むこと。**
+
+- OK: `"ExpeditionFastPass"`, `"MegaBundle"`, `"None"`
+- NG: `"21"`, `"20"`, `"0"`
+
+SheetSync のインポート時に enum 識別子から自動的に数値に変換されるため、
+スプレッドシート側には常に人間が読める識別子を記入する。
+型が enum かどうかは `notes` コマンドで 2 行目の型情報を確認すること。
+
 ## Safety & Error handling
 
 - **認証エラー**: `token.json` が無いか期限切れの場合、ユーザーに `auth_setup.py` の再実行を案内する。
@@ -299,3 +311,25 @@ python .claude/skills/google-sheets-local/scripts/sheets_tool.py update "<URL>" 
 - **不正な URL**: Google Sheets 形式でない URL の場合は処理を行わずにエラーを伝える。
 - **書き込み前の確認**: `append` や `update` を実行する前に、必ず変更内容をユーザーに提示し、確認を取ること。
 - **大量データ**: 一度に大量のセルを取得しないよう、必要な範囲のみを指定するように誘導する。
+
+## 致命的な禁止事項
+
+### `append` コマンドで型行（2行目）やヘッダー行（1行目）を破壊してはならない
+
+**2025-02-13 に発生したインシデント:**
+
+`append` コマンドを使って localize_master (master-2) シートにデータを追加した際、
+Google Sheets API の `values.append` が**シート末尾ではなく row 2（型の行）にデータを書き込み、
+元の型情報を上書き・破壊してしまった**。
+
+これにより SheetSync のインポートが正常に動作しなくなる致命的な問題が発生した。
+
+**根本原因:**
+- `append` API はヘッダー行の直後の空行を「テーブルの末尾」と判定する場合がある
+- シートの構造（ヘッダー → 型行 → データ行）を事前に確認せず `append` を実行した
+
+**再発防止策:**
+1. **`append` は使わない。** 代わりに `read` で最終行を特定し、`update` で明示的な行番号に書き込む。
+2. **書き込み前に必ず対象行の現在の内容を `read` で確認する。**
+3. **row 1（ヘッダー行）と row 2（型行）は絶対に書き換えてはならない。**
+4. **`append` の `updatedRange` レスポンスを必ず確認し、意図した行に書き込まれたかを検証する。**
